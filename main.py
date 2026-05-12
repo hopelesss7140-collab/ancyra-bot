@@ -45,7 +45,7 @@ def sign_request(params):
     ).hexdigest()
     return query + f"&signature={signature}"
 
-def def binance_request(method, endpoint, params={}):
+def binance_request(method, endpoint, params={}):
     params["timestamp"] = int(time.time() * 1000)
     params["recvWindow"] = 5000
     signed = sign_request(params)
