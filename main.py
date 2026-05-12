@@ -46,8 +46,16 @@ def bget(endpoint, params):
 
 def get_price(symbol):
     resp = requests.get(BASE_URL + "/fapi/v2/ticker/price?symbol=" + symbol, timeout=5)
+    print("Fiyat yaniti: " + str(resp.json()))
     data = resp.json()
-    return float(data["price"])
+    if isinstance(data, list):
+        return float(data[0]["price"])
+    elif isinstance(data, dict):
+        if "price" in data:
+            return float(data["price"])
+        elif "lastPrice" in data:
+            return float(data["lastPrice"])
+    raise Exception("Fiyat alinamadi: " + str(data))
 
 def close_position(symbol):
     try:
