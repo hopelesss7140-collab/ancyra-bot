@@ -7,11 +7,11 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-BINANCE_API_KEY    = os.environ.get("BINANCE_API_KEY", "")
-BINANCE_SECRET_KEY = os.environ.get("BINANCE_SECRET_KEY", "")
-BASE_URL           = "https://fapi.binance.com"
-TELEGRAM_TOKEN     = os.environ.get("TELEGRAM_TOKEN", "")
-TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
+BYBIT_API_KEY    = os.environ.get("BYBIT_API_KEY", "")
+BYBIT_SECRET_KEY = os.environ.get("BYBIT_SECRET_KEY", "")
+BASE_URL         = "https://api.bybit.com"
+TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
 def send_telegram(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
@@ -25,69 +25,89 @@ def send_telegram(message):
     except Exception as e:
         print("Telegram hatasi: " + str(e))
 
-def sign(params):
-    query = "&".join([str(k) + "=" + str(v) for k, v in params.items()])
-    sig   = hmac.new(BINANCE_SECRET_KEY.encode(), query.encode(), hashlib.sha256).hexdigest()
-    return query + "&signature=" + sig
+def get_signature(params, timestamp, recv_window):
+    param_str = str(timestamp) + BYBIT_API_KEY + str(recv_window) + "&".join([str(k) + "=" + str(v) for k, v in sorted(params.items())])
+    return hmac.new(BYBIT_SECRET_KEY.encode(), param_str.encode(), hashlib.sha256).hexdigest()
 
-def bpost(endpoint, params):
-    params["timestamp"]  = int(time.time() * 1000)
-    params["recvWindow"] = 5000
-    url     = BASE_URL + endpoint + "?" + sign(params)
-    headers = {"X-MBX-APIKEY": BINANCE_API_KEY}
-    return requests.post(url, headers=headers, timeout=10).json()
+def bybit_post(endpoint, params):
+    timestamp   = int(time.time() * 1000)
+    recv_window = 5000
+    signature   = get_signature(params, timestamp, recv_window)
+    headers = {
+        "X-BAPI-API-KEY":     BYBIT_API_KEY,
+        "X-BAPI-SIGN":        signature,
+        "X-BAPI-TIMESTAMP":   str(timestamp),
+        "X-BAPI-RECV-WINDOW": str(recv_window),
+        "Content-Type":       "application/json"
+    }
+    resp = requests.post(BASE_URL + endpoint, json=params, headers=headers, timeout=10)
+    return resp.json()
 
-def bget(endpoint, params):
-    params["timestamp"]  = int(time.time() * 1000)
-    params["recvWindow"] = 5000
-    url     = BASE_URL + endpoint + "?" + sign(params)
-    headers = {"X-MBX-APIKEY": BINANCE_API_KEY}
-    return requests.get(url, headers=headers, timeout=10).json()
+def bybit_get(endpoint, params):
+    timestamp   = int(time.time() * 1000)
+    recv_window = 5000
+    signature   = get_signature(params, timestamp, recv_window)
+    headers = {
+        "X-BAPI-API-KEY":     BYBIT_API_KEY,
+        "X-BAPI-SIGN":        signature,
+        "X-BAPI-TIMESTAMP":   str(timestamp),
+        "X-BAPI-RECV-WINDOW": str(recv_window)
+    }
+    resp = requests.get(BASE_URL + endpoint, params=params, headers=headers, timeout=10)
+    return resp.json()
 
 def get_price(symbol):
-    resp = requests.get(BASE_URL + "/fapi/v2/ticker/price?symbol=" + symbol, timeout=5)
-    print("Fiyat yaniti: " + str(resp.json()))
+    resp = requests.get(BASE_URL + "/v5/market/tickers?category=linear&symbol=" + symbol, timeout=5)
     data = resp.json()
-    if isinstance(data, list):
-        return float(data[0]["price"])
-    elif isinstance(data, dict):
-        if "price" in data:
-            return float(data["price"])
-        elif "lastPrice" in data:
-            return float(data["lastPrice"])
-    raise Exception("Fiyat alinamadi: " + str(data))
+    print("Fiyat yaniti: " + str(data))
+    return float(data["result"]["list"][0]["lastPrice"])
 
 def close_position(symbol):
     try:
-        positions = bget("/fapi/v2/positionRisk", {"symbol": symbol})
-        if isinstance(positions, list):
-            for pos in positions:
-                amt = float(pos.get("positionAmt", 0))
-                if amt != 0:
-                    side = "SELL" if amt > 0 else "BUY"
-                    bpost("/fapi/v1/order", {
+        result = bybit_get("/v5/position/list", {"category": "linear", "symbol": symbol})
+        if result.get("retCode") == 0:
+            for pos in result["result"]["list"]:
+                size = float(pos.get("size", 0))
+                side = pos.get("side", "")
+                if size > 0:
+                    close_side = "Sell" if side == "Buy" else "Buy"
+                    bybit_post("/v5/order/create", {
+                        "category":   "linear",
                         "symbol":     symbol,
-                        "side":       side,
-                        "type":       "MARKET",
-                        "quantity":   abs(amt),
-                        "reduceOnly": "true"
+                        "side":       close_side,
+                        "orderType":  "Market",
+                        "qty":        str(size),
+                        "reduceOnly": True
                     })
                     print(symbol + " pozisyon kapatildi")
     except Exception as e:
         print("Pozisyon kapatma hatasi: " + str(e))
 
+def set_leverage(symbol, leverage):
+    try:
+        bybit_post("/v5/position/set-leverage", {
+            "category":     "linear",
+            "symbol":       symbol,
+            "buyLeverage":  str(leverage),
+            "sellLeverage": str(leverage)
+        })
+    except Exception as e:
+        print("Leverage hatasi: " + str(e))
+
 def place_order(symbol, side, usdt_amount=50, leverage=5):
     try:
-        bpost("/fapi/v1/leverage", {"symbol": symbol, "leverage": leverage})
+        set_leverage(symbol, leverage)
         price    = get_price(symbol)
         quantity = round((usdt_amount * leverage) / price, 3)
-        result   = bpost("/fapi/v1/order", {
-            "symbol":   symbol,
-            "side":     side,
-            "type":     "MARKET",
-            "quantity": quantity
+        result   = bybit_post("/v5/order/create", {
+            "category":  "linear",
+            "symbol":    symbol,
+            "side":      "Buy" if side == "BUY" else "Sell",
+            "orderType": "Market",
+            "qty":       str(quantity)
         })
         print("Order: " + symbol + " " + side + " " + str(quantity) + " @ " + str(price))
+        print("Sonuc: " + str(result))
         return result
     except Exception as e:
         print("Order hatasi: " + str(e))
@@ -118,13 +138,19 @@ def webhook():
         if action == "BUY":
             close_position(symbol)
             result = place_order(symbol, "BUY")
-            send_telegram("ANCYRA LONG\n" + symbol + "\nFiyat: " + str(price) + "\n" + str(result.get("status", "")))
+            msg = "ANCYRA LONG\n" + symbol + "\nFiyat: " + str(price)
+            if "retCode" in result:
+                msg += "\nSonuc: " + ("BASARILI" if result["retCode"] == 0 else "HATA: " + result.get("retMsg", ""))
+            send_telegram(msg)
             return jsonify({"status": "long_opened", "result": result})
 
         if action == "SELL":
             close_position(symbol)
             result = place_order(symbol, "SELL")
-            send_telegram("ANCYRA SHORT\n" + symbol + "\nFiyat: " + str(price) + "\n" + str(result.get("status", "")))
+            msg = "ANCYRA SHORT\n" + symbol + "\nFiyat: " + str(price)
+            if "retCode" in result:
+                msg += "\nSonuc: " + ("BASARILI" if result["retCode"] == 0 else "HATA: " + result.get("retMsg", ""))
+            send_telegram(msg)
             return jsonify({"status": "short_opened", "result": result})
 
         return jsonify({"status": "unknown"})
@@ -135,7 +161,7 @@ def webhook():
 
 @app.route("/", methods=["GET"])
 def index():
-    return jsonify({"bot": "Ancyra Trading Bot", "status": "online", "version": "3.0"})
+    return jsonify({"bot": "Ancyra Trading Bot", "status": "online", "version": "4.0 Bybit"})
 
 @app.route("/health", methods=["GET"])
 def health():
