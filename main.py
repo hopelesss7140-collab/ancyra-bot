@@ -1,5 +1,4 @@
 import os
-import json
 import hmac
 import hashlib
 import time
@@ -11,55 +10,54 @@ app = Flask(__name__)
 BINANCE_API_KEY    = os.environ.get("BINANCE_API_KEY", "")
 BINANCE_SECRET_KEY = os.environ.get("BINANCE_SECRET_KEY", "")
 BASE_URL           = "https://fapi.binance.com"
-
-TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+TELEGRAM_TOKEN     = os.environ.get("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
 
 def send_telegram(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         return
     try:
-        url = "https://api.telegram.org/bot" + TELEGRAM_TOKEN + "/sendMessage"
-        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message})
+        requests.post(
+            "https://api.telegram.org/bot" + TELEGRAM_TOKEN + "/sendMessage",
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": message},
+            timeout=5
+        )
     except Exception as e:
         print("Telegram hatasi: " + str(e))
 
-def get_signature(params):
+def sign(params):
     query = "&".join([str(k) + "=" + str(v) for k, v in params.items()])
-    sig = hmac.new(
-        BINANCE_SECRET_KEY.encode("utf-8"),
-        query.encode("utf-8"),
-        hashlib.sha256
-    ).hexdigest()
+    sig   = hmac.new(BINANCE_SECRET_KEY.encode(), query.encode(), hashlib.sha256).hexdigest()
     return query + "&signature=" + sig
 
-def binance_post(endpoint, params):
+def bpost(endpoint, params):
     params["timestamp"]  = int(time.time() * 1000)
     params["recvWindow"] = 5000
-    signed = get_signature(params)
-    url = BASE_URL + endpoint + "?" + signed
+    url     = BASE_URL + endpoint + "?" + sign(params)
     headers = {"X-MBX-APIKEY": BINANCE_API_KEY}
-    resp = requests.post(url, headers=headers)
-    return resp.json()
+    return requests.post(url, headers=headers, timeout=10).json()
 
-def binance_get(endpoint, params):
+def bget(endpoint, params):
     params["timestamp"]  = int(time.time() * 1000)
     params["recvWindow"] = 5000
-    signed = get_signature(params)
-    url = BASE_URL + endpoint + "?" + signed
+    url     = BASE_URL + endpoint + "?" + sign(params)
     headers = {"X-MBX-APIKEY": BINANCE_API_KEY}
-    resp = requests.get(url, headers=headers)
-    return resp.json()
+    return requests.get(url, headers=headers, timeout=10).json()
+
+def get_price(symbol):
+    resp = requests.get(BASE_URL + "/fapi/v2/ticker/price?symbol=" + symbol, timeout=5)
+    data = resp.json()
+    return float(data["price"])
 
 def close_position(symbol):
     try:
-        result = binance_get("/fapi/v2/positionRisk", {"symbol": symbol})
-        if isinstance(result, list):
-            for pos in result:
+        positions = bget("/fapi/v2/positionRisk", {"symbol": symbol})
+        if isinstance(positions, list):
+            for pos in positions:
                 amt = float(pos.get("positionAmt", 0))
                 if amt != 0:
                     side = "SELL" if amt > 0 else "BUY"
-                    binance_post("/fapi/v1/order", {
+                    bpost("/fapi/v1/order", {
                         "symbol":     symbol,
                         "side":       side,
                         "type":       "MARKET",
@@ -72,22 +70,16 @@ def close_position(symbol):
 
 def place_order(symbol, side, usdt_amount=50, leverage=5):
     try:
-        binance_post("/fapi/v1/leverage", {"symbol": symbol, "leverage": leverage})
-        price_url  = BASE_URL + "/fapi/v1/ticker/price?symbol=" + symbol
-        price_resp = requests.get(price_url)
-        price_data = price_resp.json()
-if isinstance(price_data, list):
-    price = float(price_data[0]["price"])
-else:
-    price = float(price_data["price"])
-        quantity   = round((usdt_amount * leverage) / price, 3)
-        result = binance_post("/fapi/v1/order", {
+        bpost("/fapi/v1/leverage", {"symbol": symbol, "leverage": leverage})
+        price    = get_price(symbol)
+        quantity = round((usdt_amount * leverage) / price, 3)
+        result   = bpost("/fapi/v1/order", {
             "symbol":   symbol,
             "side":     side,
             "type":     "MARKET",
             "quantity": quantity
         })
-        print("Order gonderildi: " + symbol + " " + side + " " + str(quantity) + " @ " + str(price))
+        print("Order: " + symbol + " " + side + " " + str(quantity) + " @ " + str(price))
         return result
     except Exception as e:
         print("Order hatasi: " + str(e))
@@ -99,35 +91,43 @@ def webhook():
         data = request.get_json()
         if not data:
             return jsonify({"error": "Veri yok"}), 400
-        print("Sinyal alindi: " + str(data))
+
+        print("Sinyal: " + str(data))
+
         action = data.get("action", "").upper()
-        symbol = data.get("symbol", "")
+        symbol = data.get("symbol", "").replace(".P", "").replace("PERP", "")
         price  = data.get("price", 0)
-        symbol = symbol.replace(".P", "").replace("PERP", "")
+
         if not symbol.endswith("USDT"):
             symbol = symbol + "USDT"
-        print("Action: " + action + " | Symbol: " + symbol + " | Price: " + str(price))
+
+        print("Action: " + action + " | Symbol: " + symbol)
+
         if action == "STOP":
             send_telegram("ANCYRA KILL SWITCH!")
             return jsonify({"status": "stopped"})
+
         if action == "BUY":
             close_position(symbol)
             result = place_order(symbol, "BUY")
-            send_telegram("ANCYRA LONG\n" + symbol + "\nFiyat: " + str(price))
+            send_telegram("ANCYRA LONG\n" + symbol + "\nFiyat: " + str(price) + "\n" + str(result.get("status", "")))
             return jsonify({"status": "long_opened", "result": result})
+
         if action == "SELL":
             close_position(symbol)
             result = place_order(symbol, "SELL")
-            send_telegram("ANCYRA SHORT\n" + symbol + "\nFiyat: " + str(price))
+            send_telegram("ANCYRA SHORT\n" + symbol + "\nFiyat: " + str(price) + "\n" + str(result.get("status", "")))
             return jsonify({"status": "short_opened", "result": result})
+
         return jsonify({"status": "unknown"})
+
     except Exception as e:
         print("Webhook hatasi: " + str(e))
         return jsonify({"error": str(e)}), 500
 
 @app.route("/", methods=["GET"])
 def index():
-    return jsonify({"bot": "Ancyra Trading Bot", "status": "online", "version": "2.0"})
+    return jsonify({"bot": "Ancyra Trading Bot", "status": "online", "version": "3.0"})
 
 @app.route("/health", methods=["GET"])
 def health():
