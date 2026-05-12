@@ -45,12 +45,11 @@ def sign_request(params):
     ).hexdigest()
     return query + f"&signature={signature}"
 
-def binance_request(method, endpoint, params={}):
+def def binance_request(method, endpoint, params={}):
     params["timestamp"] = int(time.time() * 1000)
     params["recvWindow"] = 5000
     signed = sign_request(params)
-    url = f"{BINANCE_BASE_URL}{endpoint}?{signed}"
-    
+    url = f"https://{BINANCE_BASE_URL}{endpoint}?{signed}"
     headers = {"X-MBX-APIKEY": BINANCE_API_KEY}
     if method == "POST":
         response = requests.post(url, headers=headers)
