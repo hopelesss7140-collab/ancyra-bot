@@ -14,7 +14,7 @@ app = Flask(__name__)
 
 BINANCE_API_KEY    = os.environ.get("BINANCE_API_KEY", "")
 BINANCE_SECRET_KEY = os.environ.get("BINANCE_SECRET_KEY", "")
-BINANCE_BASE_URL   = "https://https://fapi.binance.com"  # Futures
+BINANCE_BASE_URL   = "https://fapi.binance.com"  # Futures
 
 # ============================================================
 # TELEGRAM BİLDİRİM (opsiyonel)
@@ -50,6 +50,7 @@ def binance_request(method, endpoint, params={}):
     params["recvWindow"] = 5000
     signed = sign_request(params)
     url = f"{BINANCE_BASE_URL}{endpoint}?{signed}"
+    
     headers = {"X-MBX-APIKEY": BINANCE_API_KEY}
     if method == "POST":
         response = requests.post(url, headers=headers)
