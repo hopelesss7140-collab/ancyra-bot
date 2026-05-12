@@ -75,7 +75,11 @@ def place_order(symbol, side, usdt_amount=50, leverage=5):
         binance_post("/fapi/v1/leverage", {"symbol": symbol, "leverage": leverage})
         price_url  = BASE_URL + "/fapi/v1/ticker/price?symbol=" + symbol
         price_resp = requests.get(price_url)
-        price      = float(price_resp.json()["price"])
+        price_data = price_resp.json()
+if isinstance(price_data, list):
+    price = float(price_data[0]["price"])
+else:
+    price = float(price_data["price"])
         quantity   = round((usdt_amount * leverage) / price, 3)
         result = binance_post("/fapi/v1/order", {
             "symbol":   symbol,
