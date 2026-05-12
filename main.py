@@ -2,6 +2,7 @@ import os
 import hmac
 import hashlib
 import time
+import json
 import requests
 from flask import Flask, request, jsonify
 
@@ -25,14 +26,20 @@ def send_telegram(message):
     except Exception as e:
         print("Telegram hatasi: " + str(e))
 
-def get_signature(params, timestamp, recv_window):
-    param_str = str(timestamp) + BYBIT_API_KEY + str(recv_window) + "&".join([str(k) + "=" + str(v) for k, v in sorted(params.items())])
+def sign_post(params, timestamp, recv_window):
+    body      = json.dumps(params)
+    param_str = str(timestamp) + BYBIT_API_KEY + str(recv_window) + body
+    return hmac.new(BYBIT_SECRET_KEY.encode(), param_str.encode(), hashlib.sha256).hexdigest()
+
+def sign_get(params, timestamp, recv_window):
+    query     = "&".join([str(k) + "=" + str(v) for k, v in sorted(params.items())])
+    param_str = str(timestamp) + BYBIT_API_KEY + str(recv_window) + query
     return hmac.new(BYBIT_SECRET_KEY.encode(), param_str.encode(), hashlib.sha256).hexdigest()
 
 def bybit_post(endpoint, params):
     timestamp   = int(time.time() * 1000)
     recv_window = 5000
-    signature   = get_signature(params, timestamp, recv_window)
+    signature   = sign_post(params, timestamp, recv_window)
     headers = {
         "X-BAPI-API-KEY":     BYBIT_API_KEY,
         "X-BAPI-SIGN":        signature,
@@ -41,12 +48,13 @@ def bybit_post(endpoint, params):
         "Content-Type":       "application/json"
     }
     resp = requests.post(BASE_URL + endpoint, json=params, headers=headers, timeout=10)
+    print("POST " + endpoint + " -> " + str(resp.status_code) + " " + resp.text[:200])
     return resp.json()
 
 def bybit_get(endpoint, params):
     timestamp   = int(time.time() * 1000)
     recv_window = 5000
-    signature   = get_signature(params, timestamp, recv_window)
+    signature   = sign_get(params, timestamp, recv_window)
     headers = {
         "X-BAPI-API-KEY":     BYBIT_API_KEY,
         "X-BAPI-SIGN":        signature,
@@ -54,12 +62,13 @@ def bybit_get(endpoint, params):
         "X-BAPI-RECV-WINDOW": str(recv_window)
     }
     resp = requests.get(BASE_URL + endpoint, params=params, headers=headers, timeout=10)
+    print("GET " + endpoint + " -> " + str(resp.status_code) + " " + resp.text[:200])
     return resp.json()
 
 def get_price(symbol):
     resp = requests.get(BASE_URL + "/v5/market/tickers?category=linear&symbol=" + symbol, timeout=5)
     data = resp.json()
-    print("Fiyat yaniti: " + str(data))
+    print("Fiyat: " + str(data)[:200])
     return float(data["result"]["list"][0]["lastPrice"])
 
 def close_position(symbol):
@@ -85,12 +94,13 @@ def close_position(symbol):
 
 def set_leverage(symbol, leverage):
     try:
-        bybit_post("/v5/position/set-leverage", {
+        result = bybit_post("/v5/position/set-leverage", {
             "category":     "linear",
             "symbol":       symbol,
             "buyLeverage":  str(leverage),
             "sellLeverage": str(leverage)
         })
+        print("Leverage: " + str(result))
     except Exception as e:
         print("Leverage hatasi: " + str(e))
 
@@ -107,7 +117,6 @@ def place_order(symbol, side, usdt_amount=50, leverage=5):
             "qty":       str(quantity)
         })
         print("Order: " + symbol + " " + side + " " + str(quantity) + " @ " + str(price))
-        print("Sonuc: " + str(result))
         return result
     except Exception as e:
         print("Order hatasi: " + str(e))
@@ -161,7 +170,7 @@ def webhook():
 
 @app.route("/", methods=["GET"])
 def index():
-    return jsonify({"bot": "Ancyra Trading Bot", "status": "online", "version": "4.0 Bybit"})
+    return jsonify({"bot": "Ancyra Trading Bot", "status": "online", "version": "4.1 Bybit"})
 
 @app.route("/health", methods=["GET"])
 def health():
