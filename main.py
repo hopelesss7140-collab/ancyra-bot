@@ -9,7 +9,7 @@ app = Flask(__name__)
 
 BYBIT_API_KEY    = os.environ.get("BYBIT_API_KEY", "")
 BYBIT_SECRET_KEY = os.environ.get("BYBIT_SECRET_KEY", "")
-BASE_URL         = "https://api.bybit.com"
+BASE_URL         = "https://api-demo.bybit.com"
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
