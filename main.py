@@ -4,6 +4,7 @@ import requests
 import pandas as pd
 import ta
 from dotenv import load_dotenv
+import asyncio
 from telegram import Bot
 
 load_dotenv()
@@ -13,26 +14,20 @@ load_dotenv()
 # ==================================================
 
 SYMBOL       = "XRPUSDT"
-INTERVAL     = "15"        # 15dk → en iyi scalp TF
-RISK_PERCENT = 0.01
+INTERVAL     = "15"
 LEVERAGE     = 10
 SL_MULT      = 2.5
 TP_MULT      = 2.75
 ATR_PERIOD   = 11
-COOLDOWN_SEC = 900         # Sinyal sonrası 15dk bekleme
+COOLDOWN_SEC = 900
 
-# EMA
 EMA_FAST  = 15
 EMA_SLOW  = 65
 EMA_TREND = 150
-
-# RSI
 RSI_PERIOD = 18
 RSI_HIGH   = 70
 RSI_LOW    = 30
 RSI_MID    = 50
-
-# ADX
 ADX_PERIOD = 15
 ADX_MIN    = 19
 
@@ -42,11 +37,11 @@ ADX_MIN    = 19
 
 state = {
     "in_position": False,
-    "pos_type":    None,       # "LONG" / "SHORT"
+    "pos_type":    None,
     "entry":       0.0,
     "sl":          0.0,
     "tp":          0.0,
-    "last_signal": 0,          # timestamp
+    "last_signal": 0,
     "trades":      0,
     "wins":        0,
 }
@@ -55,12 +50,17 @@ state = {
 # TELEGRAM
 # ==================================================
 
-bot     = Bot(token=os.getenv("TELEGRAM_TOKEN"))
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID        = os.getenv("TELEGRAM_CHAT_ID")
+
+async def send_telegram_async(message):
+    bot = Bot(token=TELEGRAM_TOKEN)
+    async with bot:
+        await bot.send_message(chat_id=CHAT_ID, text=message, parse_mode="HTML")
 
 def send_telegram(message):
     try:
-        bot.send_message(chat_id=CHAT_ID, text=message, parse_mode="HTML")
+        asyncio.run(send_telegram_async(message))
     except Exception as e:
         print(f"Telegram Error: {e}")
 
@@ -74,10 +74,10 @@ def get_klines(symbol=SYMBOL, interval=INTERVAL, limit=300):
         f"?category=linear&symbol={symbol}"
         f"&interval={interval}&limit={limit}"
     )
-    r        = requests.get(url, timeout=10).json()
-    data     = r["result"]["list"]
-    df       = pd.DataFrame(data)
-    df       = df.iloc[::-1].reset_index(drop=True)
+    r  = requests.get(url, timeout=10).json()
+    data = r["result"]["list"]
+    df = pd.DataFrame(data)
+    df = df.iloc[::-1].reset_index(drop=True)
     df.columns = ["time","open","high","low","close","volume","turnover"]
     for col in ["open","high","low","close","volume"]:
         df[col] = df[col].astype(float)
@@ -128,7 +128,7 @@ def check_position(last_close):
             f"Giriş:  {entry:.4f}\n"
             f"SL:     {sl:.4f}\n"
             f"PnL:    {pnl_pct:.2f}%\n\n"
-            f"📊 Toplam işlem: {state['trades']} | "
+            f"📊 İşlem: {state['trades']} | "
             f"Win: {state['wins']} | "
             f"WR: {state['wins']/max(1,state['trades'])*100:.1f}%"
         )
@@ -145,7 +145,7 @@ def check_position(last_close):
             f"Giriş:  {entry:.4f}\n"
             f"TP:     {tp:.4f}\n"
             f"PnL:    +{pnl_pct:.2f}%\n\n"
-            f"📊 Toplam işlem: {state['trades']} | "
+            f"📊 İşlem: {state['trades']} | "
             f"Win: {state['wins']} | "
             f"WR: {state['wins']/max(1,state['trades'])*100:.1f}%"
         )
@@ -163,48 +163,34 @@ def analyze():
     last = df.iloc[-1]
     prev = df.iloc[-2]
 
-    # Pozisyon kontrolü
     check_position(last["close"])
 
-    # Cooldown kontrolü
     now = time.time()
     if (now - state["last_signal"]) < COOLDOWN_SEC:
         remaining = int(COOLDOWN_SEC - (now - state["last_signal"]))
         print(f"Cooldown: {remaining}s kaldı")
         return
 
-    # Açık pozisyon varsa yeni sinyal verme
     if state["in_position"]:
         print(f"Pozisyon açık: {state['pos_type']} @ {state['entry']:.4f}")
         return
 
     atr = last["atr"]
 
-    # ──────────────────────────────
-    # LONG koşulları
-    # ──────────────────────────────
     long_trend  = last["close"] > last["ema_trend"] and last["ema_fast"] > last["ema_slow"]
     long_rsi    = RSI_MID < last["rsi"] < RSI_HIGH
     long_adx    = last["adx"] > ADX_MIN
     long_vol    = last["volume"] > last["vol_sma"]
     long_vwap   = prev["close"] < prev["vwap"] and last["close"] > last["vwap"]
-
     long_signal = long_trend and long_rsi and long_adx and long_vol and long_vwap
 
-    # ──────────────────────────────
-    # SHORT koşulları
-    # ──────────────────────────────
-    short_trend = last["close"] < last["ema_trend"] and last["ema_fast"] < last["ema_slow"]
-    short_rsi   = RSI_LOW < last["rsi"] < RSI_MID
-    short_adx   = last["adx"] > ADX_MIN
-    short_vol   = last["volume"] > last["vol_sma"]
-    short_vwap  = prev["close"] > prev["vwap"] and last["close"] < last["vwap"]
-
+    short_trend  = last["close"] < last["ema_trend"] and last["ema_fast"] < last["ema_slow"]
+    short_rsi    = RSI_LOW < last["rsi"] < RSI_MID
+    short_adx    = last["adx"] > ADX_MIN
+    short_vol    = last["volume"] > last["vol_sma"]
+    short_vwap   = prev["close"] > prev["vwap"] and last["close"] < last["vwap"]
     short_signal = short_trend and short_rsi and short_adx and short_vol and short_vwap
 
-    # ──────────────────────────────
-    # LONG SİNYAL
-    # ──────────────────────────────
     if long_signal:
         entry = last["close"]
         sl    = round(entry - atr * SL_MULT, 4)
@@ -220,23 +206,18 @@ def analyze():
 
         msg = (
             f"🚀 <b>LONG SİNYAL</b>\n\n"
-            f"Sembol:   {SYMBOL}\n"
-            f"TF:       {INTERVAL}dk\n"
-            f"Fiyat:    {entry:.4f}\n\n"
-            f"🛡 SL:    {sl:.4f} ({SL_MULT}x ATR)\n"
-            f"🎯 TP:    {tp:.4f} ({TP_MULT}x ATR)\n"
-            f"⚖️ R/R:   1:{rr}\n\n"
+            f"Sembol: {SYMBOL}\n"
+            f"TF: {INTERVAL}dk\n"
+            f"Fiyat: {entry:.4f}\n\n"
+            f"🛡 SL: {sl:.4f}\n"
+            f"🎯 TP: {tp:.4f}\n"
+            f"⚖️ R/R: 1:{rr}\n\n"
             f"📊 RSI: {last['rsi']:.1f} | ADX: {last['adx']:.1f}\n"
-            f"📈 EMA Trend: YUKARI\n"
-            f"💧 VWAP: KIRILDI YUKARI\n"
-            f"📦 Hacim: GÜÇLÜ"
+            f"📈 Trend: YUKARI | VWAP: KIRILDI ✅"
         )
         send_telegram(msg)
         print(f"LONG → {entry:.4f} | SL: {sl:.4f} | TP: {tp:.4f}")
 
-    # ──────────────────────────────
-    # SHORT SİNYAL
-    # ──────────────────────────────
     elif short_signal:
         entry = last["close"]
         sl    = round(entry + atr * SL_MULT, 4)
@@ -252,25 +233,23 @@ def analyze():
 
         msg = (
             f"🔻 <b>SHORT SİNYAL</b>\n\n"
-            f"Sembol:   {SYMBOL}\n"
-            f"TF:       {INTERVAL}dk\n"
-            f"Fiyat:    {entry:.4f}\n\n"
-            f"🛡 SL:    {sl:.4f} ({SL_MULT}x ATR)\n"
-            f"🎯 TP:    {tp:.4f} ({TP_MULT}x ATR)\n"
-            f"⚖️ R/R:   1:{rr}\n\n"
+            f"Sembol: {SYMBOL}\n"
+            f"TF: {INTERVAL}dk\n"
+            f"Fiyat: {entry:.4f}\n\n"
+            f"🛡 SL: {sl:.4f}\n"
+            f"🎯 TP: {tp:.4f}\n"
+            f"⚖️ R/R: 1:{rr}\n\n"
             f"📊 RSI: {last['rsi']:.1f} | ADX: {last['adx']:.1f}\n"
-            f"📉 EMA Trend: AŞAĞI\n"
-            f"💧 VWAP: KIRILDI AŞAĞI\n"
-            f"📦 Hacim: GÜÇLÜ"
+            f"📉 Trend: AŞAĞI | VWAP: KIRILDI ✅"
         )
         send_telegram(msg)
         print(f"SHORT → {entry:.4f} | SL: {sl:.4f} | TP: {tp:.4f}")
 
     else:
-        print(f"Sinyal yok | Fiyat: {last['close']:.4f} | RSI: {last['rsi']:.1f} | ADX: {last['adx']:.1f}")
+        print(f"Sinyal yok | {last['close']:.4f} | RSI: {last['rsi']:.1f} | ADX: {last['adx']:.1f}")
 
 # ==================================================
-# MAIN LOOP
+# MAIN
 # ==================================================
 
 send_telegram(
