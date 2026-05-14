@@ -13,7 +13,8 @@ load_dotenv()
 # CONFIG
 # ==================================================
 
-SYMBOL       = "XRPUSDT"
+SYMBOLS = ["XRPUSDT", "XLMUSDT", "MASKUSDT"]
+
 INTERVAL     = "15"
 LEVERAGE     = 10
 SL_MULT      = 2.5
@@ -21,9 +22,9 @@ TP_MULT      = 2.75
 ATR_PERIOD   = 11
 COOLDOWN_SEC = 900
 
-EMA_FAST  = 15
-EMA_SLOW  = 65
-EMA_TREND = 150
+EMA_FAST   = 15
+EMA_SLOW   = 65
+EMA_TREND  = 150
 RSI_PERIOD = 18
 RSI_HIGH   = 70
 RSI_LOW    = 30
@@ -32,19 +33,22 @@ ADX_PERIOD = 15
 ADX_MIN    = 19
 
 # ==================================================
-# STATE
+# STATE — her coin için ayrı
 # ==================================================
 
-state = {
-    "in_position": False,
-    "pos_type":    None,
-    "entry":       0.0,
-    "sl":          0.0,
-    "tp":          0.0,
-    "last_signal": 0,
-    "trades":      0,
-    "wins":        0,
-}
+def new_state():
+    return {
+        "in_position": False,
+        "pos_type":    None,
+        "entry":       0.0,
+        "sl":          0.0,
+        "tp":          0.0,
+        "last_signal": 0,
+        "trades":      0,
+        "wins":        0,
+    }
+
+states = {symbol: new_state() for symbol in SYMBOLS}
 
 # ==================================================
 # TELEGRAM
@@ -68,16 +72,16 @@ def send_telegram(message):
 # GET KLINES
 # ==================================================
 
-def get_klines(symbol=SYMBOL, interval=INTERVAL, limit=300):
+def get_klines(symbol, interval=INTERVAL, limit=300):
     url = (
         f"https://api.bybit.com/v5/market/kline"
         f"?category=linear&symbol={symbol}"
         f"&interval={interval}&limit={limit}"
     )
-    r  = requests.get(url, timeout=10).json()
+    r    = requests.get(url, timeout=10).json()
     data = r["result"]["list"]
-    df = pd.DataFrame(data)
-    df = df.iloc[::-1].reset_index(drop=True)
+    df   = pd.DataFrame(data)
+    df   = df.iloc[::-1].reset_index(drop=True)
     df.columns = ["time","open","high","low","close","volume","turnover"]
     for col in ["open","high","low","close","volume"]:
         df[col] = df[col].astype(float)
@@ -104,7 +108,8 @@ def add_indicators(df):
 # POSITION CHECK
 # ==================================================
 
-def check_position(last_close):
+def check_position(symbol, last_close):
+    state = states[symbol]
     if not state["in_position"]:
         return
 
@@ -124,9 +129,9 @@ def check_position(last_close):
         state["trades"]     += 1
         msg = (
             f"🔴 <b>STOP LOSS — {ptype}</b>\n\n"
-            f"Sembol: {SYMBOL}\n"
-            f"Giriş:  {entry:.4f}\n"
-            f"SL:     {sl:.4f}\n"
+            f"Sembol: {symbol}\n"
+            f"Giriş:  {entry:.6f}\n"
+            f"SL:     {sl:.6f}\n"
             f"PnL:    {pnl_pct:.2f}%\n\n"
             f"📊 İşlem: {state['trades']} | "
             f"Win: {state['wins']} | "
@@ -141,9 +146,9 @@ def check_position(last_close):
         state["wins"]       += 1
         msg = (
             f"✅ <b>TAKE PROFIT — {ptype}</b>\n\n"
-            f"Sembol: {SYMBOL}\n"
-            f"Giriş:  {entry:.4f}\n"
-            f"TP:     {tp:.4f}\n"
+            f"Sembol: {symbol}\n"
+            f"Giriş:  {entry:.6f}\n"
+            f"TP:     {tp:.6f}\n"
             f"PnL:    +{pnl_pct:.2f}%\n\n"
             f"📊 İşlem: {state['trades']} | "
             f"Win: {state['wins']} | "
@@ -155,24 +160,26 @@ def check_position(last_close):
 # ANALYZE
 # ==================================================
 
-def analyze():
-    df   = get_klines()
+def analyze(symbol):
+    state = states[symbol]
+
+    df   = get_klines(symbol)
     df   = add_indicators(df)
     df   = df.dropna().reset_index(drop=True)
 
     last = df.iloc[-1]
     prev = df.iloc[-2]
 
-    check_position(last["close"])
+    check_position(symbol, last["close"])
 
     now = time.time()
     if (now - state["last_signal"]) < COOLDOWN_SEC:
         remaining = int(COOLDOWN_SEC - (now - state["last_signal"]))
-        print(f"Cooldown: {remaining}s kaldı")
+        print(f"{symbol} | Cooldown: {remaining}s")
         return
 
     if state["in_position"]:
-        print(f"Pozisyon açık: {state['pos_type']} @ {state['entry']:.4f}")
+        print(f"{symbol} | Pozisyon açık: {state['pos_type']} @ {state['entry']:.6f}")
         return
 
     atr = last["atr"]
@@ -193,68 +200,56 @@ def analyze():
 
     if long_signal:
         entry = last["close"]
-        sl    = round(entry - atr * SL_MULT, 4)
-        tp    = round(entry + atr * TP_MULT, 4)
+        sl    = round(entry - atr * SL_MULT, 6)
+        tp    = round(entry + atr * TP_MULT, 6)
         rr    = round(TP_MULT / SL_MULT, 2)
-
-        state["in_position"] = True
-        state["pos_type"]    = "LONG"
-        state["entry"]       = entry
-        state["sl"]          = sl
-        state["tp"]          = tp
-        state["last_signal"] = now
-
+        state.update({"in_position": True, "pos_type": "LONG",
+                      "entry": entry, "sl": sl, "tp": tp, "last_signal": now})
         msg = (
             f"🚀 <b>LONG SİNYAL</b>\n\n"
-            f"Sembol: {SYMBOL}\n"
+            f"Sembol: {symbol}\n"
             f"TF: {INTERVAL}dk\n"
-            f"Fiyat: {entry:.4f}\n\n"
-            f"🛡 SL: {sl:.4f}\n"
-            f"🎯 TP: {tp:.4f}\n"
+            f"Fiyat: {entry:.6f}\n\n"
+            f"🛡 SL: {sl:.6f}\n"
+            f"🎯 TP: {tp:.6f}\n"
             f"⚖️ R/R: 1:{rr}\n\n"
             f"📊 RSI: {last['rsi']:.1f} | ADX: {last['adx']:.1f}\n"
             f"📈 Trend: YUKARI | VWAP: KIRILDI ✅"
         )
         send_telegram(msg)
-        print(f"LONG → {entry:.4f} | SL: {sl:.4f} | TP: {tp:.4f}")
+        print(f"{symbol} | LONG → {entry:.6f} | SL: {sl:.6f} | TP: {tp:.6f}")
 
     elif short_signal:
         entry = last["close"]
-        sl    = round(entry + atr * SL_MULT, 4)
-        tp    = round(entry - atr * TP_MULT, 4)
+        sl    = round(entry + atr * SL_MULT, 6)
+        tp    = round(entry - atr * TP_MULT, 6)
         rr    = round(TP_MULT / SL_MULT, 2)
-
-        state["in_position"] = True
-        state["pos_type"]    = "SHORT"
-        state["entry"]       = entry
-        state["sl"]          = sl
-        state["tp"]          = tp
-        state["last_signal"] = now
-
+        state.update({"in_position": True, "pos_type": "SHORT",
+                      "entry": entry, "sl": sl, "tp": tp, "last_signal": now})
         msg = (
             f"🔻 <b>SHORT SİNYAL</b>\n\n"
-            f"Sembol: {SYMBOL}\n"
+            f"Sembol: {symbol}\n"
             f"TF: {INTERVAL}dk\n"
-            f"Fiyat: {entry:.4f}\n\n"
-            f"🛡 SL: {sl:.4f}\n"
-            f"🎯 TP: {tp:.4f}\n"
+            f"Fiyat: {entry:.6f}\n\n"
+            f"🛡 SL: {sl:.6f}\n"
+            f"🎯 TP: {tp:.6f}\n"
             f"⚖️ R/R: 1:{rr}\n\n"
             f"📊 RSI: {last['rsi']:.1f} | ADX: {last['adx']:.1f}\n"
             f"📉 Trend: AŞAĞI | VWAP: KIRILDI ✅"
         )
         send_telegram(msg)
-        print(f"SHORT → {entry:.4f} | SL: {sl:.4f} | TP: {tp:.4f}")
+        print(f"{symbol} | SHORT → {entry:.6f} | SL: {sl:.6f} | TP: {tp:.6f}")
 
     else:
-        print(f"Sinyal yok | {last['close']:.4f} | RSI: {last['rsi']:.1f} | ADX: {last['adx']:.1f}")
+        print(f"{symbol} | Sinyal yok | {last['close']:.6f} | RSI: {last['rsi']:.1f} | ADX: {last['adx']:.1f}")
 
 # ==================================================
 # MAIN
 # ==================================================
 
 send_telegram(
-    f"✅ <b>ANCYRA SCALP BOT BAŞLADI</b>\n\n"
-    f"Sembol: {SYMBOL}\n"
+    f"✅ <b>ANCYRA MULTI BOT BAŞLADI</b>\n\n"
+    f"📊 Coinler: {' | '.join(SYMBOLS)}\n"
     f"TF: {INTERVAL}dk\n"
     f"SL: {SL_MULT}x ATR\n"
     f"TP: {TP_MULT}x ATR\n"
@@ -262,9 +257,11 @@ send_telegram(
 )
 
 while True:
-    try:
-        analyze()
-    except Exception as e:
-        print(f"ERROR: {e}")
-        send_telegram(f"⚠️ <b>BOT HATA</b>\n{e}")
-    time.sleep(60)
+    for symbol in SYMBOLS:
+        try:
+            analyze(symbol)
+        except Exception as e:
+            print(f"{symbol} | ERROR: {e}")
+            send_telegram(f"⚠️ <b>{symbol} HATA</b>\n{e}")
+        time.sleep(2)
+    time.sleep(56)
